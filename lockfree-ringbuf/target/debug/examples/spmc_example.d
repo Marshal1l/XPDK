@@ -1,1 +1,0 @@
-/home/mzh/XPDK/target/debug/examples/spmc_example: /home/mzh/XPDK/examples/spmc_example.rs /home/mzh/XPDK/src/lib.rs /home/mzh/XPDK/src/mpmc.rs /home/mzh/XPDK/src/mpsc.rs /home/mzh/XPDK/src/spmc.rs /home/mzh/XPDK/src/spsc.rs
