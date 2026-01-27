@@ -1,0 +1,22 @@
+[package]
+name = "lockfree-ringbuf"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+description = "A high-performance lock-free ring buffer supporting SPSC/MPSC/SPMC/MPMC patterns with batch operations"
+repository = "https://github.com/yourusername/lockfree-ringbuf"
+keywords = ["lockfree", "ring-buffer", "queue", "mpsc", "spsc"]
+categories = ["concurrency", "data-structures"]
+readme = "README.md"
+
+[dependencies]
+crossbeam-utils = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1.0", features = ["full"] }
+
+[[bench]]
+name = "benchmarks"
+harness = false
