@@ -1,0 +1,30 @@
+[package]
+name = "xpdk-examples"
+version = "0.1.0"
+edition = "2021"
+authors = ["XPDK Contributors"]
+license = "MIT OR Apache-2.0"
+description = "XPDK example applications"
+repository = "https://github.com/yourusername/xpdk"
+
+[dependencies]
+xpdk = { path = ".." }
+tokio = { version = "1.0", features = ["full"] }
+env_logger = "0.10"
+log = "0.4"
+ctrlc = "3.2"
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "udp_echo_server"
+path = "src/bin/udp_echo_server.rs"
+
+[[bin]]
+name = "udp_client"
+path = "src/bin/udp_client.rs"
+
+[[bin]]
+name = "performance_test"
+path = "src/bin/performance_test.rs"

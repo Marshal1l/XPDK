@@ -1,0 +1,14 @@
+/home/mzh/XPDK/target/debug/deps/anstream-4ed5b3aeb8552f47.d: /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/lib.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/mod.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/strip.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/wincon.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/stream.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/_macros.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/auto.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/buffer.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/fmt.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/strip.rs
+
+/home/mzh/XPDK/target/debug/deps/libanstream-4ed5b3aeb8552f47.rmeta: /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/lib.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/mod.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/strip.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/wincon.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/stream.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/_macros.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/auto.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/buffer.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/fmt.rs /home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/strip.rs
+
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/lib.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/mod.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/strip.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/adapter/wincon.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/stream.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/_macros.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/auto.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/buffer.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/fmt.rs:
+/home/mzh/.cargo/registry/src/github.com-25cdd57fae9f0462/anstream-0.6.21/src/strip.rs:

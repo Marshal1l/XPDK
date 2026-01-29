@@ -1,0 +1,21 @@
+[package]
+name = "xpdk-benchmarks"
+version = "0.1.0"
+edition = "2021"
+authors = ["XPDK Contributors"]
+license = "MIT OR Apache-2.0"
+description = "XPDK performance benchmarks"
+repository = "https://github.com/yourusername/xpdk"
+
+[dependencies]
+xpdk = { path = ".." }
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1.0", features = ["full"] }
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[[bench]]
+name = "latency"
+harness = false

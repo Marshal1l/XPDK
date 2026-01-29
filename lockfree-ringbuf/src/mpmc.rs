@@ -16,6 +16,16 @@ pub struct MpmcRingBuffer<T> {
     tail: CachePadded<AtomicUsize>,
 }
 
+impl<T: Clone> Clone for MpmcRingBuffer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: RingBufferStorage::new(self.storage.capacity()),
+            head: CachePadded::new(AtomicUsize::new(self.head.load(Ordering::Relaxed))),
+            tail: CachePadded::new(AtomicUsize::new(self.tail.load(Ordering::Relaxed))),
+        }
+    }
+}
+
 impl<T> MpmcRingBuffer<T> {
     /// Create a new MPMC ring buffer with the given capacity
     /// Capacity will be rounded up to the next power of 2

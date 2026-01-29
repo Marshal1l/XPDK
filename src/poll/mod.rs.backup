@@ -1,0 +1,588 @@
+//! Poll Mode Driver (PMD) module for high-performance packet I/O
+//!
+//! This module implements a DPDK-inspired poll mode driver using libpcap,
+//! supporting multi-queue, RSS, and batch operations for maximum throughput.
+
+use crate::{
+    memory::{Mbuf, MbufPool},
+    Config, Error, Result,
+};
+use libc::{c_int, c_uchar, c_uint, c_void};
+use parking_lot::Mutex;
+use pcap::{Active, Capture, Device, Packet};
+use std::collections::HashMap;
+use std::ffi::CStr;
+use std::fmt;
+use std::mem::MaybeUninit;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+/// Default packet buffer size
+pub const DEFAULT_PACKET_SIZE: usize = 2048;
+
+/// Maximum batch size for packet operations
+pub const MAX_BATCH_SIZE: usize = 32;
+
+/// Receive queue statistics
+#[derive(Debug, Default)]
+pub struct RxQueueStats {
+    pub packets_received: AtomicUsize,
+    pub bytes_received: AtomicUsize,
+    pub errors: AtomicUsize,
+    pub drops: AtomicUsize,
+}
+
+/// Transmit queue statistics
+#[derive(Debug, Default)]
+pub struct TxQueueStats {
+    pub packets_sent: AtomicUsize,
+    pub bytes_sent: AtomicUsize,
+    pub errors: AtomicUsize,
+    pub drops: AtomicUsize,
+}
+
+/// Receive queue
+pub struct RxQueue {
+    /// Queue ID
+    id: u16,
+    /// libpcap capture handle
+    capture: Arc<Mutex<Capture<Active>>>,
+    /// Memory pool for mbuf allocation
+    pool: Arc<MbufPool>,
+    /// Queue statistics
+    stats: RxQueueStats,
+    /// Running flag
+    running: AtomicBool,
+    /// RSS hash function
+    rss_hash: Option<RssHash>,
+}
+
+impl RxQueue {
+    /// Create a new receive queue
+    pub fn new(id: u16, capture: Capture<Active>, pool: Arc<MbufPool>) -> Result<Self> {
+        let capture = Arc::new(Mutex::new(capture));
+
+        Ok(Self {
+            id,
+            capture,
+            pool,
+            stats: RxQueueStats::default(),
+            running: AtomicBool::new(false),
+            rss_hash: None,
+        })
+    }
+
+    /// Receive a single packet
+    pub fn recv(&self) -> Result<*mut Mbuf> {
+        let mut capture = self.capture.lock();
+
+        match capture.next_packet() {
+            Ok(packet) => {
+                let mbuf = self.pool.alloc()?;
+
+                unsafe {
+                    let mbuf_ref = &mut *mbuf;
+                    let data_len = packet.data.len();
+
+                    if data_len > mbuf_ref.buf_len {
+                        self.pool.free(mbuf)?;
+                        self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                        return Err(Error::NetworkError("Packet too large for mbuf".to_string()));
+                    }
+
+                    // Copy packet data to mbuf
+                    ptr::copy_nonoverlapping(packet.data.as_ptr(), mbuf_ref.data, data_len);
+
+                    mbuf_ref.len = data_len;
+                    mbuf_ref.timestamp = packet.header.ts.tv_sec as u64 * 1_000_000_000
+                        + packet.header.ts.tv_usec as u64 * 1000;
+                    mbuf_ref.queue_id = self.id;
+
+                    // Set packet type based on content
+                    mbuf_ref.packet_type = self.detect_packet_type(mbuf_ref.data);
+                }
+
+                self.stats.packets_received.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes_received
+                    .fetch_add(packet.data.len(), Ordering::Relaxed);
+
+                Ok(mbuf)
+            }
+            Err(pcap::Error::TimeoutExpired) => {
+                Err(Error::NetworkError("No packet available".to_string()))
+            }
+            Err(e) => {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                Err(Error::PcapError(e.to_string()))
+            }
+        }
+    }
+
+    /// Receive multiple packets in batch
+    pub fn recv_batch(&self, mbufs: &mut [*mut Mbuf], max_count: usize) -> Result<usize> {
+        let mut received = 0;
+
+        for i in 0..max_count.min(mbufs.len()) {
+            match self.recv() {
+                Ok(mbuf) => {
+                    mbufs[i] = mbuf;
+                    received += 1;
+                }
+                Err(Error::NetworkError(_)) => break, // No more packets
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(received)
+    }
+
+    /// Start the receive queue
+    pub fn start(&self) -> Result<()> {
+        self.running.store(true, Ordering::Relaxed);
+
+        // Set capture mode to non-blocking
+        {
+            let mut capture = self.capture.lock();
+            let _ = capture.setnonblock()?;
+        }
+
+        Ok(())
+    }
+
+    /// Stop the receive queue
+    pub fn stop(&self) -> Result<()> {
+        self.running.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Get queue statistics
+    pub fn stats(&self) -> &RxQueueStats {
+        &self.stats
+    }
+
+    /// Detect packet type from Ethernet header
+    fn detect_packet_type(&self, data: &[u8]) -> crate::memory::PacketType {
+        if data.is_empty() {
+            return crate::memory::PacketType::Unknown;
+        }
+
+        // Check minimum Ethernet frame size
+        let data_slice = if data.len() >= 14 { &data[..14] } else { data };
+            if data_slice.len() < 14 {
+                return crate::memory::PacketType::Unknown;
+            }
+
+            // Get EtherType (bytes 12-13)
+            let ether_type = u16::from_be_bytes([data_slice[12], data_slice[13]]);
+
+            match ether_type {
+                0x0800 => crate::memory::PacketType::Ipv4,
+                0x86DD => crate::memory::PacketType::Ipv6,
+                0x0806 => crate::memory::PacketType::Unknown, // ARP
+                _ => crate::memory::PacketType::Ethernet,
+            }
+    }
+
+/// Transmit queue
+pub struct TxQueue {
+    /// Queue ID
+    id: u16,
+    /// libpcap capture handle (for sending)
+    capture: Arc<Mutex<Capture<Active>>>,
+    /// Queue statistics
+    stats: TxQueueStats,
+    /// Running flag
+    running: AtomicBool,
+}
+
+impl TxQueue {
+    /// Create a new transmit queue
+    pub fn new(id: u16, capture: Capture<Active>) -> Result<Self> {
+        let capture = Arc::new(Mutex::new(capture));
+
+        Ok(Self {
+            id,
+            capture,
+            stats: TxQueueStats::default(),
+            running: AtomicBool::new(false),
+        })
+    }
+
+    /// Transmit a single packet
+    pub fn send(&self, mbuf: *mut Mbuf) -> Result<()> {
+        if mbuf.is_null() {
+            return Err(Error::NetworkError("Null mbuf".to_string()));
+        }
+
+        let mbuf_ref = unsafe { &*mbuf };
+        let data = unsafe { std::slice::from_raw_parts(mbuf_ref.data, mbuf_ref.len) };
+
+        let mut capture = self.capture.lock();
+        match capture.sendpacket(data) {
+            Ok(_) => {
+                self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes_sent
+                    .fetch_add(mbuf_ref.len, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(e) => {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                Err(Error::PcapError(e.to_string()))
+            }
+        }
+    }
+
+    /// Transmit multiple packets in batch
+    pub fn send_batch(&self, mbufs: &[*mut Mbuf], count: usize) -> Result<usize> {
+        let mut sent = 0;
+
+        for i in 0..count.min(mbufs.len()) {
+            match self.send(mbufs[i]) {
+                Ok(_) => sent += 1,
+                Err(_) => break,
+            }
+        }
+
+        Ok(sent)
+    }
+
+    /// Start the transmit queue
+    pub fn start(&self) -> Result<()> {
+        self.running.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Stop the transmit queue
+    pub fn stop(&self) -> Result<()> {
+        self.running.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Get queue statistics
+    pub fn stats(&self) -> &TxQueueStats {
+        &self.stats
+    }
+}
+
+/// RSS (Receive Side Scaling) hash configuration
+#[derive(Debug, Clone)]
+pub struct RssConfig {
+    /// RSS hash function
+    pub hash_function: RssHashFunction,
+    /// RSS hash key
+    pub hash_key: [u8; 40],
+    /// RSS indirection table
+    pub indirection_table: Vec<u16>,
+}
+
+/// RSS hash function
+#[derive(Debug, Clone, Copy)]
+pub enum RssHashFunction {
+    Toeplitz,
+    SimpleXor,
+}
+
+/// RSS hash calculator
+pub struct RssHash {
+    config: RssConfig,
+}
+
+impl RssHash {
+    /// Create a new RSS hash calculator
+    pub fn new(config: RssConfig) -> Self {
+        Self { config }
+    }
+
+    /// Calculate RSS hash for a packet
+    pub fn calculate(&self, mbuf: *const Mbuf) -> u32 {
+        if mbuf.is_null() {
+            return 0;
+        }
+
+        let mbuf_ref = unsafe { &*mbuf };
+
+        match self.config.hash_function {
+            RssHashFunction::Toeplitz => self.toeplitz_hash(mbuf_ref.data, mbuf_ref.len),
+            RssHashFunction::SimpleXor => self.simple_xor_hash(mbuf_ref.data, mbuf_ref.len),
+        }
+    }
+
+    /// Toeplitz hash implementation
+    fn toeplitz_hash(&self, data: *const u8, len: usize) -> u32 {
+        // Simplified Toeplitz hash implementation
+        // In a real implementation, this would use the RSS key
+        let mut hash = 0u32;
+
+        unsafe {
+            let data_slice = std::slice::from_raw_parts(data, len);
+
+            // Use source and destination IP for IPv4 packets
+            if len >= 34 && data_slice[12] == 0x08 && data_slice[13] == 0x00 {
+                // IPv4 packet - use IP addresses (bytes 26-33)
+                for i in 26..34 {
+                    hash = hash.wrapping_mul(31).wrapping_add(data_slice[i] as u32);
+                }
+            } else {
+                // Simple hash for other packets
+                for &byte in data_slice.iter().take(64) {
+                    hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+                }
+            }
+        }
+
+        hash
+    }
+
+    /// Simple XOR hash implementation
+    fn simple_xor_hash(&self, data: *const u8, len: usize) -> u32 {
+        let mut hash = 0u32;
+
+        unsafe {
+            let data_slice = std::slice::from_raw_parts(data, len);
+
+            for chunk in data_slice.chunks_exact(4) {
+                let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                hash ^= word;
+            }
+
+            // Handle remaining bytes
+            let remainder = len % 4;
+            if remainder > 0 {
+                let mut word = [0u8; 4];
+                word[..remainder].copy_from_slice(&data_slice[len - remainder..]);
+                hash ^= u32::from_le_bytes(word);
+            }
+        }
+
+        hash
+    }
+}
+
+/// Poll Mode Driver
+pub struct PollModeDriver {
+    /// Driver configuration
+    config: Config,
+    /// Network device
+    device: Device,
+    /// Receive queues
+    rx_queues: HashMap<u16, RxQueue>,
+    /// Transmit queues
+    tx_queues: HashMap<u16, TxQueue>,
+    /// Memory pool
+    pool: Arc<MbufPool>,
+    /// Running flag
+    running: AtomicBool,
+    /// Driver statistics
+    stats: PmdStats,
+}
+
+/// PMD statistics
+#[derive(Debug, Default)]
+pub struct PmdStats {
+    pub total_packets_received: AtomicUsize,
+    pub total_bytes_received: AtomicUsize,
+    pub total_packets_sent: AtomicUsize,
+    pub total_bytes_sent: AtomicUsize,
+    pub total_errors: AtomicUsize,
+}
+
+impl PollModeDriver {
+    /// Create a new poll mode driver
+    pub fn new(config: &Config) -> Result<Self> {
+        // Find the specified network device
+        let device = Device::lookup()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|d| d.name == config.interface)
+            .ok_or_else(|| {
+                Error::InvalidConfig(format!("Interface '{}' not found", config.interface))
+            })?;
+
+        // Create memory pool
+        let pool = Arc::new(MbufPool::new(
+            "pmd_pool".to_string(),
+            config.pool_size,
+            DEFAULT_PACKET_SIZE,
+        )?);
+
+        let mut rx_queues = HashMap::new();
+        let mut tx_queues = HashMap::new();
+
+        // Create RX queues
+        for i in 0..config.rx_queue_count {
+            let capture = Capture::from_device(device.clone())?
+                .promisc(true)
+                .snaplen(DEFAULT_PACKET_SIZE as i32)
+                .timeout(1) // Non-blocking with 1ms timeout
+                .open()?;
+
+            let rx_queue = RxQueue::new(i as u16, capture, pool.clone())?;
+            rx_queues.insert(i as u16, rx_queue);
+        }
+
+        // Create TX queues
+        for i in 0..config.tx_queue_count {
+            let capture = Capture::from_device(device.clone())?
+                .promisc(true)
+                .snaplen(DEFAULT_PACKET_SIZE as i32)
+                .open()?;
+
+            let tx_queue = TxQueue::new(i as u16, capture)?;
+            tx_queues.insert(i as u16, tx_queue);
+        }
+
+        Ok(Self {
+            config: config.clone(),
+            device,
+            rx_queues,
+            tx_queues,
+            pool,
+            running: AtomicBool::new(false),
+            stats: PmdStats::default(),
+        })
+    }
+
+    /// Start the PMD
+    pub fn start(&mut self) -> Result<()> {
+        self.running.store(true, Ordering::Relaxed);
+
+        // Start all RX queues
+        for rx_queue in self.rx_queues.values() {
+            rx_queue.start()?;
+        }
+
+        // Start all TX queues
+        for tx_queue in self.tx_queues.values() {
+            tx_queue.start()?;
+        }
+
+        Ok(())
+    }
+
+    /// Stop the PMD
+    pub fn stop(&mut self) -> Result<()> {
+        self.running.store(false, Ordering::Relaxed);
+
+        // Stop all RX queues
+        for rx_queue in self.rx_queues.values() {
+            rx_queue.stop()?;
+        }
+
+        // Stop all TX queues
+        for tx_queue in self.tx_queues.values() {
+            tx_queue.stop()?;
+        }
+
+        Ok(())
+    }
+
+    /// Get a receive queue by ID
+    pub fn get_rx_queue(&self, id: u16) -> Option<&RxQueue> {
+        self.rx_queues.get(&id)
+    }
+
+    /// Get a transmit queue by ID
+    pub fn get_tx_queue(&self, id: u16) -> Option<&TxQueue> {
+        self.tx_queues.get(&id)
+    }
+
+    /// Get the memory pool
+    pub fn get_pool(&self) -> &Arc<MbufPool> {
+        &self.pool
+    }
+
+    /// Get device information
+    pub fn device_info(&self) -> &Device {
+        &self.device
+    }
+
+    /// Get PMD statistics
+    pub fn stats(&self) -> PmdStatsView {
+        let mut total_rx_packets = 0;
+        let mut total_rx_bytes = 0;
+        let mut total_rx_errors = 0;
+        let mut total_rx_drops = 0;
+
+        for rx_queue in self.rx_queues.values() {
+            total_rx_packets += rx_queue.stats.packets_received.load(Ordering::Relaxed);
+            total_rx_bytes += rx_queue.stats.bytes_received.load(Ordering::Relaxed);
+            total_rx_errors += rx_queue.stats.errors.load(Ordering::Relaxed);
+            total_rx_drops += rx_queue.stats.drops.load(Ordering::Relaxed);
+        }
+
+        let mut total_tx_packets = 0;
+        let mut total_tx_bytes = 0;
+        let mut total_tx_errors = 0;
+        let mut total_tx_drops = 0;
+
+        for tx_queue in self.tx_queues.values() {
+            total_tx_packets += tx_queue.stats.packets_sent.load(Ordering::Relaxed);
+            total_tx_bytes += tx_queue.stats.bytes_sent.load(Ordering::Relaxed);
+            total_tx_errors += tx_queue.stats.errors.load(Ordering::Relaxed);
+            total_tx_drops += tx_queue.stats.drops.load(Ordering::Relaxed);
+        }
+
+        PmdStatsView {
+            rx_packets: total_rx_packets,
+            rx_bytes: total_rx_bytes,
+            rx_errors: total_rx_errors,
+            rx_drops: total_rx_drops,
+            tx_packets: total_tx_packets,
+            tx_bytes: total_tx_bytes,
+            tx_errors: total_tx_errors,
+            tx_drops: total_tx_drops,
+        }
+    }
+}
+
+/// PMD statistics view
+#[derive(Debug)]
+pub struct PmdStatsView {
+    pub rx_packets: usize,
+    pub rx_bytes: usize,
+    pub rx_errors: usize,
+    pub rx_drops: usize,
+    pub tx_packets: usize,
+    pub tx_bytes: usize,
+    pub tx_errors: usize,
+    pub tx_drops: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rss_hash() {
+        let config = RssConfig {
+            hash_function: RssHashFunction::SimpleXor,
+            hash_key: [0; 40],
+            indirection_table: vec![0, 1, 2, 3],
+        };
+
+        let rss = RssHash::new(config);
+
+        // Test with dummy data
+        let data = vec![1u8; 64];
+        let hash = rss.simple_xor_hash(data.as_ptr(), data.len());
+        assert!(hash > 0);
+    }
+
+    #[test]
+    fn test_pmd_creation() {
+        let config = Config::default();
+        let result = PollModeDriver::new(&config);
+
+        // This may fail if no network interface is available
+        match result {
+            Ok(_) => println!("PMD created successfully"),
+            Err(Error::InvalidConfig(_)) => println!("Expected: Interface not found"),
+            Err(e) => println!("Unexpected error: {:?}", e),
+        }
+    }
+}

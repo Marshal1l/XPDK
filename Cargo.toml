@@ -1,0 +1,77 @@
+[package]
+name = "xpdk"
+version = "0.1.0"
+edition = "2021"
+authors = ["XPDK Contributors"]
+license = "MIT OR Apache-2.0"
+description = "High-performance userspace UDP network stack inspired by DPDK, using libpcap"
+repository = "https://github.com/yourusername/xpdk"
+keywords = ["networking", "udp", "dpdk", "libpcap", "userspace"]
+categories = ["network-programming", "hardware-support"]
+readme = "README.md"
+
+[dependencies]
+# Core dependencies
+lockfree-ringbuf = { path = "lockfree-ringbuf" }
+libc = "0.2"
+bitflags = "2.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+
+# Memory management
+memmap2 = "0.7"
+nix = { version = "0.27", features = ["mman", "process", "fs", "user"] }
+
+# libpcap bindings
+pcap = "1.0"
+
+# Concurrency and atomic operations
+crossbeam-utils = "0.8"
+atomic = "0.5"
+parking_lot = "0.12"
+
+# Hardware interaction
+raw-cpuid = "11.0"
+num_cpus = "1.16"
+
+# Utilities
+memoffset = "0.9"
+static_assertions = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1.0", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+ctrlc = "3.4"
+
+[features]
+default = ["hugepages", "numa", "hardware-offload"]
+hugepages = []
+numa = []
+libnuma = []
+hardware-offload = []
+
+
+
+[[example]]
+name = "udp_echo_server"
+path = "examples/src/bin/udp_echo_server.rs"
+
+[[example]]
+name = "udp_client"
+path = "examples/src/bin/udp_client.rs"
+
+[[example]]
+name = "performance_test"
+path = "examples/src/bin/performance_test.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+debug = true

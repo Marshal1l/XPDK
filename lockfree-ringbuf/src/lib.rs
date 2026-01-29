@@ -2,8 +2,6 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use crossbeam_utils::CachePadded;
 
 mod mpmc;
 mod mpsc;
@@ -60,18 +58,6 @@ impl<T> RingBufferStorage<T> {
     #[inline]
     fn capacity(&self) -> usize {
         self.capacity
-    }
-
-    /// Get the mask for fast modulo operation
-    #[inline]
-    fn mask(&self) -> usize {
-        self.mask
-    }
-
-    /// Get a pointer to the buffer
-    #[inline]
-    fn buffer_ptr(&self) -> *mut T {
-        unsafe { (*self.buffer.get()).as_mut_ptr() }
     }
 
     /// Read a value from the buffer at the given index
@@ -134,14 +120,4 @@ pub trait BatchOps<T> {
 
     /// Pop multiple items from the queue
     fn pop_batch(&self, buf: &mut [T]) -> Result<usize, Error>;
-}
-
-/// Calculate the next power of 2 greater than or equal to n
-#[inline]
-fn next_power_of_two(n: usize) -> usize {
-    if n.is_power_of_two() {
-        n
-    } else {
-        1 << (64 - n.leading_zeros() as usize)
-    }
 }
